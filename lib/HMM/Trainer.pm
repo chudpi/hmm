@@ -13,16 +13,20 @@ package HMM::Trainer; {
 
     our $VERSION = 0.1.0;
 
+    # Constructor arguments required for training the model
     has 'entities'     => (is => 'rw', isa => 'ArrayRef', required => 1 ); # hidden states
     has 'conditions'   => (is => 'rw', isa => 'ArrayRef', required => 1 ); # observable conditions
     has 'training_set' => (is => 'rw', isa => 'HashRef',  required => 1 ); # training data
+    
+    # Optional external hashref within which to store the model
     has 'model'        => (is => 'rw', isa => 'HashRef',  default  => sub{ {} }); # probability model (output HMM)
 
+    # Optional flags
+    has 'train'            => (is => 'ro', isa => 'Bool',   default => 1 ); # train by default
+    has 'invert_emissions' => (is => 'ro', isa => 'Bool',   default => 0 ); # don't invert by default
     has 'verbose'      => (is => 'ro', isa => 'Bool',   default => 0 ); # print some info messages
     has 'debug'        => (is => 'ro', isa => 'Bool',   default => 0 ); # print heaps of dumps to stdout
 
-    has 'train'            => (is => 'ro', isa => 'Bool',   default => 1 ); # train by default
-    has 'invert_emissions' => (is => 'ro', isa => 'Bool',   default => 0 ); # don't invert by default
 
     # Moosey object instance setup
     sub BUILD {
@@ -45,6 +49,8 @@ package HMM::Trainer; {
 
     
     ### the guts ### 
+
+    # supervises model training activities
     sub train_hmm {
         my $self = shift;
 
@@ -54,11 +60,12 @@ package HMM::Trainer; {
         $self->compute_transition_probabilities();
         $self->compute_emission_probabilities();
 
-        print "debug: " . $self->debug() . "\n" if $self->verbose(); 
+        # debug: dump the model to stdout
         print Dumper($self->model()) if $self->debug();
         return;
     }
 
+    
     sub compute_start_probabilities {
         my $self = shift;
 
@@ -66,7 +73,9 @@ package HMM::Trainer; {
 
         my ( $anchor_counts, $anchor_total ) = $self->_get_anchor_counts();
     
-        # calculate start probabilities.
+        # calculate start probability for each entity.
+        # the anchor probability for an entity is:
+        #    number of entity anchors / total number of anchors.
         my $anchor_probs = {};
         while ( my($entity, $count) = each %$anchor_counts ) {
             if ( $anchor_total ) {
@@ -77,14 +86,7 @@ package HMM::Trainer; {
             }
         }
         
-        if ( $self->debug() ) {
-            # check that anchor probabilities add up to 1 (give or take rounding)
-            print "SANITY CHECK\n";
-                my $t = 0;
-                $t += $_ for (values %$anchor_probs);
-                print "ANCHORS: $t\n";
-        }
-
+        # add the start probability hash to the model.
         $self->model()->{start} = $anchor_probs;
         return;
     }
@@ -96,7 +98,8 @@ package HMM::Trainer; {
         print "Computing Transition Probabilities.\n" if $self->verbose();
         my ($transition_counts, $prior_totals) = $self->_get_transition_counts();
 
-        # calculate transition probabilities
+        # calculate the probabilities of each entity transitioning into each entity
+        # (including itself) and build the matrix of transition probabilities.
         my $trans_probs = {};
         while ( my( $prior, $trans_entities ) = each %$transition_counts ) {
             while ( my ( $trans_entity, $trans_count ) = each %$trans_entities ) {
@@ -109,15 +112,7 @@ package HMM::Trainer; {
             }
         }
 
-        if ( $self->debug() ) {
-            print "SANITY CHECK\n";
-            while ( my( $prior, $trans_entities ) = each %$trans_probs ) {
-                my $t = 0;
-                $t += $_ for (values %$trans_entities);
-                print uc($prior), ": $t\n";
-            }
-        }
-
+        # add the transition probability matrix to the model
         $self->model()->{'transition'} = $trans_probs;
 
         return;
@@ -130,7 +125,8 @@ package HMM::Trainer; {
         print "Computing Emission Probabilities.\n" if $self->verbose();
         my ($emission_counts, $entity_totals) = $self->_get_emission_counts();
 
-        # calculate emission probabilities
+        # calculate the probabilities of each entity getting emitted from 
+        # each observable condition.
         my $emission_probs = {};
         while ( my ($entity, $condition_counts) = each %$emission_counts ) {
             while ( my ($condition, $count) = each %$condition_counts ) {
@@ -141,8 +137,10 @@ package HMM::Trainer; {
                 else {
                     $emission_probability = 0;
                 }
-
-                # useful for feeding the model into Algorithm::Viterbi, which for some 
+                
+                # optionally invert the nested emission hash keys from
+                # emission -> condition to condition -> emission.
+                #   useful for feeding the model into Algorithm::Viterbi, which for some 
                 # reason likes its emission hash keyed on conditions rather than entities.
                 if ( $self->invert_emissions() ) {
                     $emission_probs->{$condition}->{$entity} = $emission_probability;
@@ -154,15 +152,7 @@ package HMM::Trainer; {
             }
         }
 
-        if ( $self->debug() ) {
-            print "SANITY CHECK\n";
-            while ( my( $entity, $conditions ) = each %$emission_probs ) {
-                my $t = 0;
-               $t += $_ for (values %$conditions);
-                print uc($entity), ": $t\n";
-            }
-        }
-
+        # add emission probabilities to the model
         $self->model()->{'emission'} = $emission_probs;
 
         return;
@@ -394,6 +384,47 @@ A hash reference containing a list of observed sequences keyed on a unique seque
       ],
   }
 
+If this is a bit difficult to follow, perhaps an example will help.  Consider that you are  training a model whereby you wish to decode the probable sequence of stops a bus made along a known route given a sequence of the number of passengers ( groupped into selected  sets ) that boarded the at each stop.  The training set would comprise of data you recorded during your previous trips when you forgot to bring a book and needed something else to keep you occupied.  Your training set schema would be:
+  $training_set = {
+      'trip_no' => [
+          [ 'number of passengers boarded', 'name of the bus stop' ],
+      ],
+  };
+
+And the training set containign the data you've collected would look something like:
+  $training_set_hashref = {
+    'ride01' => [
+        ['0-2', 'Washington Blvd'],
+        ['7+', 'Venice'],
+        ['0-2', 'Palms'],
+        ['0-2', 'Ocean Park Blvd'],
+        ['3-6', 'Pico'],
+    ],
+    'ride02' => [
+        ['3-6', 'Washington Place'],
+        ['3-6', 'Venice'],
+        ['0-2', 'Rose'],
+        ['7+', 'Pico'],
+        ['0-2', 'Olympic'],
+    ],
+    'ride03' => [
+        ['0-2', 'Washington Place'],
+        ['0-2', 'Barbara'],
+        ['0-2', 'Venice'],
+        ['0-2', 'Woodbine'],
+        ['3-6', 'Pico'],
+        ['0-2', 'Olympic'],
+    ],
+    'ride04' => [
+        ['7+', 'Washington Blvd'],
+        ['3-6', 'Venice'],
+        ['7+', 'Pico'],
+        ['3-6', 'Olympic'],
+    ],
+  }
+
+As of the time of this writing you, dear user, are tasked with supplying the training set in the correct format.  Luckily the Author, yours truly, likes YAML way more than he would ever admit to anyone at a coctail party, and is already working on a more digestable way of injesting the trainig sets (there is also a high priority TODO to allow streaming in training sets too large to load into memory).
+
 =back
 
 Optional Arguments:
@@ -402,7 +433,7 @@ Optional Arguments:
 
 =item * model
 
-A hash reference to hold the trained module.  Default: anonymous hashref.
+A hash reference to hold the trained module.  Default: anonymous hash.
 
 =back
 
@@ -418,9 +449,9 @@ Instructs the constructor to train the model as part of constructor initializati
 
 =over 4
 
-= item * invert_emissions
+=item * invert_emissions
 
-Instructs the trainer to invert the nesting of entities and conditions as keys in the emission hash.  By default the module nests entities as outer hash keys and conditions as inner hash keys - as it is described in the Wikipedia "Viterbi Algorithm" page.  This option is provided as convenience for easy feeding the generated model into the Algorithm::Viterbi CPAN module, which for reasons undefined inverts the nesting.
+Instructs the trainer to invert the nesting of entities and conditions as keys in the emission hash.  By default the module nests entities as outer hash keys and conditions as inner hash keys - as it is described in the Wikipedia "Viterbi Algorithm" page, http://en.wikipedia.org/wiki/Viterbi_algorithm .  This option is provided as convenience for easy feeding the generated model into the Algorithm::Viterbi CPAN module, which for reasons undefined inverts the nesting.
 
 =back
 
@@ -442,51 +473,94 @@ Turns on the Trainer's debug mode causing it to dump structures and sanity check
 
 =head2 BUILD
 
+=over 4
+
 Moose's preferred way of instantiating objects.
+
+=back
 
 =head2 train_hmm
 
+=over 4
+
 Controller method which manages the training of the start, transition, and emission probabilities.
+
+=back
 
 =head2 compute_start_probabilities
 
+=over 4
+
 Computes and populates the model with start probabilities.
+
+=back
 
 =head2 compute_transition_probabilities
 
+=over 4
+
 Computes and populates the model with transition probabilities.
+
+=back
 
 =head2 compute_emission_probabilities
 
+=over 4
+
 Computes and populates the model with transition probabilities.
+
+=back
 
 
 Internal Methods
 
 =head2 _validate_training_set
 
+=over 4
+
 Verifies the soundness of the training set.
 Removes sequences containing unknown entities or conditions.
 
+=back
+
 =head2 _get_anchor_counts
+
+=over 4
 
 Traverses the training set and collects entity anchor counts.
 
+=back
+
 =head2 _get_transition_counts
+
+=over 4
 
 Traverses the training set and collects entity transition counts.
 
+=back
+
 =head2 _get_emission_counts
+
+=over 4
 
 Traverses the training set and collects entity emission countsper condition..
 
+=back
+
 =head2 model train invert_emissions debug verbose
 
+=over 4
+
 Accessors (provided by Moose):
+
+=back
 
 =head1 TODOs
 
 Accept a stream or iterable generator for large training sets to protect memory.
+
+Introduce an option to lump unknown entities in a training set under 'other' entity.
+
 
 =head1 AUTHOR
 

@@ -3,8 +3,7 @@
 use strict;
 use warnings;
 
-use lib '../lib';  # TODO use RepRoot.
-
+use RepRoot;
 use Data::Dumper;
 use HMM::Trainer;
 use Algorithm::Viterbi;
@@ -91,8 +90,6 @@ my $hmm = HMM::Trainer->new({
 #    debug        => 1,  # heaps of verbosity
 });
 
-print Dumper $hmm->model();
-
 
 print "\n\nCalculating most likely stops given the sequence of boarder counts: (1, 4, 1, 2, 9)\n\n";
 
@@ -106,3 +103,10 @@ my ($prob, $v_path, $v_prob) = $v->forward_viterbi(['0-2','3-6','0-2','7+']);
 print "Prob  : $prob\n";
 print "V_Path: ", Dumper($v_path);
 print "V_Prob: $v_prob\n"; 
+
+
+
+print "\n\nDumping the Model.\n";
+print Dumper $hmm->model();
+
+
